@@ -5,6 +5,7 @@ import threading
 import time
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
+from flask import Flask, request, jsonify
 
 import grpc
 from grpc_reflection.v1alpha import reflection
@@ -500,175 +501,89 @@ def start_server(state):
     server.start()
     return server
 
+app = Flask(__name__)
+
 #
 # HTTP server handler
 #
-class HttpHandler(SimpleHTTPRequestHandler):
-    def reply_internal_err(self):
-        self.send_response(500)
-        self.end_headers()
-        httpResp = "we encountered an internal error, please try again\n"
-        self.wfile.write(httpResp.encode())
+@app.route('/get', methods=['GET'])
+def get_value():
+    key = request.args.get('key')
+    if not key:
+        return jsonify({'error': 'Key query param is required'}), 400
+    channel = grpc.insecure_channel(state['node_addr'])
+    stub = pb2_grpc.RaftNodeStub(channel)
+    try:
+        resp = stub.GetVal(pb2.GetRequest(key=key))
+        if resp.success == False:
+            return jsonify({'error': 'Key is not found'}), 404
 
-    def reply_wrong_path(self):
-        self.send_response(404)
-        self.end_headers()
-        httpResp = "wrong url path\n"
-        self.wfile.write(httpResp.encode())
+        return jsonify({key: resp.value}), 200
+    except:
+        return jsonify({'error': 'Internal error'}), 500
 
-    def reply_success(self, result):
-        httpResp = f"{result}\n"
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(httpResp.encode())
+@app.route('/create', methods=['POST'])
+def create_value():
+    key = request.args.get('key')
+    value = request.args.get('value')
+    if not key or not value:
+        return jsonify({'error': 'Key and value query params are required'}), 400
+    channel = grpc.insecure_channel(state['node_addr'])
+    stub = pb2_grpc.RaftNodeStub(channel)
+    try:
+        resp = stub.GetVal(pb2.GetRequest(key=key))
+        if resp.value != "None":
+            return jsonify({'error': 'Key value pair already exists', key: value}), 400
 
-    def reply_missing_key(self, method):
-        self.send_response(400)
-        self.end_headers()
-        httpResp = f"you must specify key in {method} request\n"
-        self.wfile.write(httpResp.encode())
+        resp = stub.SetVal(pb2.SetRequest(key=key, value=value))
+        if resp.success == False:
+            return jsonify({'error': 'Internal error'}), 500
 
-    def reply_missing_key_or_value(self, method):
-        self.send_response(400)
-        self.end_headers()
-        httpResp = f"you must specify key and value in {method} request\n"
-        self.wfile.write(httpResp.encode())
+        return jsonify({'error': 'KV pair created successfuly'}), 200
+    except:
+        return jsonify({'error': 'Internal error'}), 500
 
-    def do_POST(self):
-        url_path = urlparse(self.path)
-        query_components = parse_qs(url_path.query)
-        if url_path.path == '/create':
-            key = query_components.get('key', [None])[0]
-            value = query_components.get('value', [None])[0]
-            if key is None or value is None:
-                self.reply_missing_key_or_value("POST")
-                return
+@app.route('/update', methods=['PUT'])
+def update_value():
+    key = request.args.get('key')
+    value = request.args.get('value')
+    if not key or not value:
+        return jsonify({'error': 'Key and value query params are required'}), 400
+    channel = grpc.insecure_channel(state['node_addr'])
+    stub = pb2_grpc.RaftNodeStub(channel)
+    try:
+        resp = stub.GetVal(pb2.GetRequest(key=key))
+        if resp.value == "None":
+           return jsonify({'error': 'Key is not found'}), 404
 
-            channel = grpc.insecure_channel(state['node_addr'])
-            stub = pb2_grpc.RaftNodeStub(channel)
-            try:
-                resp = stub.GetVal(pb2.GetRequest(key=key))
-                if resp.value != "None":
-                    self.send_response(400)
-                    self.end_headers()
-                    httpResp = f"key {key} already exists; value: {resp.value}\n"
-                    self.wfile.write(httpResp.encode())
-                    return
+        resp = stub.SetVal(pb2.SetRequest(key=key, value=value))
+        if resp.success == False:
+            return jsonify({'error': 'Internal error'}), 500
 
-                resp = stub.SetVal(pb2.SetRequest(key=key, value=value))
-                if resp.success == False:
-                    self.reply_internal_err()
-                    return
+        return jsonify({'error': 'KV pair updated successfuly'}), 200
+    except:
+        return jsonify({'error': 'Internal error'}), 500
 
-                self.reply_success("success")
-                return
-            except:
-                self.reply_internal_err()
-                return
-        else:
-            self.reply_wrong_path()
-            return
-        
-    def do_GET(self):
-        url_path = urlparse(self.path)
-        query_components = parse_qs(url_path.query)
-        if url_path.path == '/get':
-            key = query_components.get('key', [None])[0]
-            if key is None:
-                self.reply_missing_key("GET")
-                return
+@app.route('/delete', methods=['DELETE'])
+def delete_value():
+    key = request.args.get('key')
+    if not key:
+        return jsonify({'error': 'Key query param is required'}), 400
+    channel = grpc.insecure_channel(state['node_addr'])
+    stub = pb2_grpc.RaftNodeStub(channel)
+    try:
+        resp = stub.GetVal(pb2.GetRequest(key=key))
+        if resp.value == "None":
+           return jsonify({'error': 'Key is not found'}), 404
 
-            channel = grpc.insecure_channel(state['node_addr'])
-            stub = pb2_grpc.RaftNodeStub(channel)
-            try:
-                resp = stub.GetVal(pb2.GetRequest(key=key))
-                if resp.success == False:
-                    self.reply_internal_err()
-                    return
+        resp = stub.SetVal(pb2.SetRequest(key=key, value=None))
+        if resp.success == False:
+            return jsonify({'error': 'Internal error'}), 500
 
-                self.reply_success(resp.value)
-                return
-            except:
-                self.reply_internal_err()
-                return
-        else:
-            self.reply_wrong_path()
-            return
+        return jsonify({'error': 'Value deleted successfuly'}), 200
+    except:
+        return jsonify({'error': 'Internal error'}), 500
 
-    def do_PUT(self):
-        url_path = urlparse(self.path)
-        query_components = parse_qs(url_path.query)
-        if url_path.path == '/update':
-            key = query_components.get('key', [None])[0]
-            value = query_components.get('value', [None])[0]
-            if key is None or value is None:
-                self.reply_missing_key_or_value("PUT")
-                return
-
-            channel = grpc.insecure_channel(state['node_addr'])
-            stub = pb2_grpc.RaftNodeStub(channel)
-            try:
-                resp = stub.GetVal(pb2.GetRequest(key=key))
-                if resp.value == "None":
-                    self.send_response(404)
-                    self.end_headers()
-                    httpResp = f"key {key} does not exist\n"
-                    self.wfile.write(httpResp.encode())
-                    return
-
-                resp = stub.SetVal(pb2.SetRequest(key=key, value=value))
-                if resp.success == False:
-                    self.reply_internal_err()
-                    return
-
-                self.reply_success("success")
-                return
-            except:
-                self.reply_internal_err()
-                return
-        else:
-            self.reply_wrong_path()
-            return
-
-    def do_DELETE(self):
-        url_path = urlparse(self.path)
-        query_components = parse_qs(url_path.query)
-        if url_path.path == '/delete':
-            key = query_components.get('key', [None])[0]
-            if key is None:
-                self.reply_missing_key("DELETE")
-                return
-
-            channel = grpc.insecure_channel(state['node_addr'])
-            stub = pb2_grpc.RaftNodeStub(channel)
-            try:
-                resp = stub.GetVal(pb2.GetRequest(key=key))
-                if resp.value == "None":
-                    self.send_response(404)
-                    self.end_headers()
-                    httpResp = f"key {key} does not exist\n"
-                    self.wfile.write(httpResp.encode())
-                    return
-
-                resp = stub.SetVal(pb2.SetRequest(key=key, value=None))
-                if resp.success == False:
-                    self.reply_internal_err()
-                    return
-
-                self.reply_success("success")
-                return
-            except:
-                self.reply_internal_err()
-                return
-        else:
-            self.reply_wrong_path()
-            return
-
-def run_http_server(host, port, server_class=HTTPServer, handler_class=HttpHandler):
-    server_address = (host, port)
-    httpd = server_class(server_address, handler_class)
-    print(f"Starting HTTP server on port {port}")
-    httpd.serve_forever()
 
 def main(id, nodes):
     election_th = threading.Thread(target=election_timeout_thread)
@@ -695,7 +610,7 @@ def main(id, nodes):
     (host, port, _) = nodes[id]
 
     state['node_addr'] = f"{host}:{port}"
-    http_server_th = threading.Thread(target=run_http_server, args=(host,port-1000,))
+    http_server_th = threading.Thread(target=app.run, args=(host,port-1000,))
     http_server_th.daemon = True
     http_server_th.start()
 

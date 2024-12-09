@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "6001:6001"
+    environment:
+      - NODE_ID=0
+    networks:
+      - ping-pong-net
+
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "6002:6002"
+    environment:
+      - NODE_ID=1
+    networks:
+      - ping-pong-net
+
+
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "6003:6003"
+    environment:
+      - NODE_ID=2
+    networks:
+      - ping-pong-net
+
+networks:
+  ping-pong-net:

@@ -8,10 +8,10 @@ COPY raft_pb2.py /app/
 COPY config.conf /app/
 COPY requirements.txt /app/
 
-# RUN pip3 install grpcio
-# RUN pip3 install grpcio-tools
-# RUN pip3 install grpcio-reflection
-RUN python -m pip install --upgrade pip
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-ENTRYPOINT ["python3", "raft.py", "1"]
+EXPOSE 7001
+EXPOSE 7002
+EXPOSE 7003
+ENTRYPOINT [ "sh", "-c", "python3 raft.py $NODE_ID" ]
