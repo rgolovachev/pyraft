@@ -64,6 +64,11 @@ class RaftNodeStub(object):
                 request_serializer=raft__pb2.GetRequest.SerializeToString,
                 response_deserializer=raft__pb2.GetReply.FromString,
                 _registered_method=True)
+        self.CasVal = channel.unary_unary(
+                '/RaftNode/CasVal',
+                request_serializer=raft__pb2.CasRequest.SerializeToString,
+                response_deserializer=raft__pb2.CasReply.FromString,
+                _registered_method=True)
 
 
 class RaftNodeServicer(object):
@@ -105,6 +110,12 @@ class RaftNodeServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def CasVal(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_RaftNodeServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -137,6 +148,11 @@ def add_RaftNodeServicer_to_server(servicer, server):
                     servicer.GetVal,
                     request_deserializer=raft__pb2.GetRequest.FromString,
                     response_serializer=raft__pb2.GetReply.SerializeToString,
+            ),
+            'CasVal': grpc.unary_unary_rpc_method_handler(
+                    servicer.CasVal,
+                    request_deserializer=raft__pb2.CasRequest.FromString,
+                    response_serializer=raft__pb2.CasReply.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -301,6 +317,33 @@ class RaftNode(object):
             '/RaftNode/GetVal',
             raft__pb2.GetRequest.SerializeToString,
             raft__pb2.GetReply.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CasVal(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/RaftNode/CasVal',
+            raft__pb2.CasRequest.SerializeToString,
+            raft__pb2.CasReply.FromString,
             options,
             channel_credentials,
             insecure,

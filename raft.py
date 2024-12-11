@@ -209,14 +209,14 @@ def heartbeat_thread(id_to_request):
                 ensure_connected(id_to_request)
                 (_, _, stub) = state['nodes'][id_to_request]
 
-                # In case this is heartbeat send -404 as value in replicate logs params
+                # In case this is heartbeat send -228 as value in replicate logs params
                 resp = stub.AppendEntries(pb2.AppendRequest(
                     term=state['term'],
                     leader_id=state['id'],
-                    prev_log_index=-404,
-                    prev_log_term=-404,
+                    prev_log_index=-228,
+                    prev_log_term=-228,
                     entries=None,
-                    leader_commit=-404
+                    leader_commit=-228
                 ), timeout=0.100)
 
                 if (state['type'] != 'leader') or is_suspended:
@@ -359,9 +359,9 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
         with state_lock:
             is_heartbeat = (
-                    request.prev_log_index == -404 or
-                    request.prev_log_term == -404 or
-                    request.leader_commit == -404
+                    request.prev_log_index == -228 or
+                    request.prev_log_term == -228 or
+                    request.leader_commit == -228
             )
 
             if request.term > state['term']:
@@ -369,6 +369,16 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 become_a_follower()
             if is_heartbeat and request.term == state['term']:
                 state['leader_id'] = request.leader_id
+
+                if request.leader_commit > state['commit_idx']:
+                    state['commit_idx'] = min(request.leader_commit, len(state['logs']) - 1)
+
+                    while state['commit_idx'] > state['last_applied']:
+                        state['last_applied'] += 1
+                        _, key, value = state['logs'][state['last_applied']][1]
+                        state['hash_table'][key] = value
+
+                # need to apply entries
                 return pb2.ResultWithTerm(term=state['term'], result=True)
 
             failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
@@ -477,9 +487,46 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
             return resp
 
+        idx = 0
         with state_lock:
             state['logs'].append((state['term'], ('set', request.key, request.value)))
-            return pb2.SetReply(success=True)
+            idx = len(state['logs']) - 1
+
+        while True:
+            time.sleep(0.01)
+            with state_lock:
+                if state['commit_idx'] >= idx:
+                    break
+
+        return pb2.SetReply(success=True)
+
+    def CasVal(self, request, context):
+        global is_suspended
+        if is_suspended:
+            return
+
+        return pb2.CasReply(success=False)
+        # if state['type'] != 'leader':
+        #     if state['leader_id'] == -1:
+        #         return pb2.CasReply(success=False)
+
+        #     ensure_connected(state['leader_id'])
+
+        #     (_, _, stub) = state['nodes'][state['leader_id']]
+        #     try:
+        #         resp = stub.CasVal(request, timeout=0.100)
+        #     except:
+        #         return pb2.CasReply(success=False)
+
+        #     return resp
+
+        # with state_lock:
+        #     old_value = state['hash_table'][request.key]
+        #     applied = False
+        #     if old_value == request.expected:
+        #         applied = True
+        #         state['logs'].append((state['term'], ('cas', request.key, request.desired)))
+        #     return pb2.CasReply(success=True, applied=applied, old_value=old_value)
 
 #
 # other
@@ -535,7 +582,7 @@ def get_value():
             req.last_applied_valid = True
         resp = stub.GetVal(req)
         if resp.status == pb2.GetReplyStatus.FAILED:
-            return jsonify({'status': 'failed'}), 500
+            return jsonify({'status': 'failed'}), 429
         # read from replica
         elif resp.status == pb2.GetReplyStatus.SUCCESS:
             return jsonify({'status': 'success', key: resp.value}), 200

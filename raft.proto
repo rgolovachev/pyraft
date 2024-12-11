@@ -43,17 +43,23 @@ message GetRequest {
         bool last_applied_valid = 4;
 }
 
-enum GetReplyStatus {
-        FAILED = 0;
-        SUCCESS = 1;
-        REDIRECT = 2;
-}
-
 message GetReply {
         GetReplyStatus status = 1;
         string value = 2;
         string redirect_addr = 3;
         int64 last_applied = 4;
+}
+
+message CasRequest {
+        string key = 1;
+        string expected = 2;
+        string desired = 3;
+}
+
+message CasReply {
+        bool success = 1;
+        bool applied = 2;
+        string old_value = 3;
 }
 
 message Entry {
@@ -69,6 +75,12 @@ message ResultWithTerm {
 
 message EmptyMessage {}
 
+enum GetReplyStatus {
+        FAILED = 0;
+        SUCCESS = 1;
+        REDIRECT = 2;
+}
+
 service RaftNode {
         rpc RequestVote(VoteRequest) returns (ResultWithTerm) {}
         rpc AppendEntries(AppendRequest) returns (ResultWithTerm) {}
@@ -76,4 +88,5 @@ service RaftNode {
         rpc Suspend(SuspendRequest) returns (EmptyMessage) {}
         rpc SetVal(SetRequest) returns (SetReply) {}
         rpc GetVal(GetRequest) returns (GetReply) {}
+        rpc CasVal(CasRequest) returns (CasReply) {}
 }
