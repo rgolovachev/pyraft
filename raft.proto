@@ -38,11 +38,22 @@ message SetReply {
     
 message GetRequest {
         string key = 1;
+        bool need_master = 2;
+        int64 last_applied = 3;
+        bool last_applied_valid = 4;
 }
-    
+
+enum GetReplyStatus {
+        FAILED = 0;
+        SUCCESS = 1;
+        REDIRECT = 2;
+}
+
 message GetReply {
-        bool success = 1;
+        GetReplyStatus status = 1;
         string value = 2;
+        string redirect_addr = 3;
+        int64 last_applied = 4;
 }
 
 message Entry {

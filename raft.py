@@ -5,7 +5,7 @@ import threading
 import time
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 
 import grpc
 from grpc_reflection.v1alpha import reflection
@@ -440,11 +440,23 @@ class Handler(pb2_grpc.RaftNodeServicer):
             return
 
         with state_lock:
+            if not request.need_master and state['type'] == 'leader':
+                replicas = []
+                for id, node in state['nodes'].items():
+                    if state['id'] != id:
+                        replicas.append(node)
+                random.shuffle(replicas)
+                (host, port, _) = replicas[0]
+                return pb2.GetReply(status=pb2.GetReplyStatus.REDIRECT, redirect_addr=f"{host}:{port-1000}", last_applied=state['last_applied'])
+
+            if state['type'] != 'leader' and request.last_applied_valid and state['last_applied'] < request.last_applied:
+                return pb2.GetReply(status=pb2.GetReplyStatus.FAILED)
+
             value = state['hash_table'].get(request.key)
             success = (value is not None)
             value = value if success else "None"
 
-            return pb2.GetReply(success=success, value=value)
+            return pb2.GetReply(status=pb2.GetReplyStatus.SUCCESS, value=value)
 
     def SetVal(self, request, context):
         global is_suspended
@@ -497,6 +509,7 @@ def start_server(state):
     pb2_grpc.add_RaftNodeServicer_to_server(Handler(), server)
     SERVICE_NAMES = (pb2.DESCRIPTOR.services_by_name['RaftNode'].full_name, reflection.SERVICE_NAME)
     reflection.enable_server_reflection(SERVICE_NAMES, server)
+    # change to [::]: in docker
     server.add_insecure_port(f"{ip}:{port}")
     server.start()
     return server
@@ -511,16 +524,30 @@ def get_value():
     key = request.args.get('key')
     if not key:
         return jsonify({'error': 'Key query param is required'}), 400
+    # optional query parameter
+    last_applied = request.args.get('last_applied')
     channel = grpc.insecure_channel(state['node_addr'])
     stub = pb2_grpc.RaftNodeStub(channel)
     try:
-        resp = stub.GetVal(pb2.GetRequest(key=key))
-        if resp.success == False:
-            return jsonify({'error': 'Key is not found'}), 404
-
-        return jsonify({key: resp.value}), 200
-    except:
-        return jsonify({'error': 'Internal error'}), 500
+        req = pb2.GetRequest(key=key, need_master=False)
+        if last_applied != None:
+            req.last_applied = int(last_applied)
+            req.last_applied_valid = True
+        resp = stub.GetVal(req)
+        if resp.status == pb2.GetReplyStatus.FAILED:
+            return jsonify({'status': 'failed'}), 500
+        # read from replica
+        elif resp.status == pb2.GetReplyStatus.SUCCESS:
+            return jsonify({'status': 'success', key: resp.value}), 200
+        #read from master
+        elif resp.status == pb2.GetReplyStatus.REDIRECT:
+            httpResp = jsonify({'status': 'redirected', 'last_applied': resp.last_applied})
+            httpResp.headers['Location'] = resp.redirect_addr
+            return httpResp, 302
+        return jsonify({'status': 'shit happens'}), 500
+    except grpc.RpcError as e:
+        print(e)
+        return jsonify({'error': 'Internal error caused by exception'}), 500
 
 @app.route('/create', methods=['POST'])
 def create_value():
@@ -531,17 +558,20 @@ def create_value():
     channel = grpc.insecure_channel(state['node_addr'])
     stub = pb2_grpc.RaftNodeStub(channel)
     try:
-        resp = stub.GetVal(pb2.GetRequest(key=key))
-        if resp.value != "None":
+        resp = stub.GetVal(pb2.GetRequest(key=key, need_master=True))
+        if resp.status != pb2.GetReplyStatus.SUCCESS:
+            return jsonify({'error': 'Internal error'}), 500
+        elif resp.value != "None":
             return jsonify({'error': 'Key value pair already exists', key: value}), 400
 
         resp = stub.SetVal(pb2.SetRequest(key=key, value=value))
         if resp.success == False:
             return jsonify({'error': 'Internal error'}), 500
 
-        return jsonify({'error': 'KV pair created successfuly'}), 200
-    except:
-        return jsonify({'error': 'Internal error'}), 500
+        return jsonify({'status': 'success', 'msg': 'KV pair created successfuly'}), 200
+    except grpc.RpcError as e:
+        print(e)
+        return jsonify({'error': 'Internal error caused by exception'}), 500
 
 @app.route('/update', methods=['PUT'])
 def update_value():
@@ -552,17 +582,20 @@ def update_value():
     channel = grpc.insecure_channel(state['node_addr'])
     stub = pb2_grpc.RaftNodeStub(channel)
     try:
-        resp = stub.GetVal(pb2.GetRequest(key=key))
-        if resp.value == "None":
+        resp = stub.GetVal(pb2.GetRequest(key=key, need_master=True))
+        if resp.status != pb2.GetReplyStatus.SUCCESS:
+            return jsonify({'error': 'Internal error'}), 500
+        elif resp.value == "None":
            return jsonify({'error': 'Key is not found'}), 404
 
         resp = stub.SetVal(pb2.SetRequest(key=key, value=value))
         if resp.success == False:
             return jsonify({'error': 'Internal error'}), 500
 
-        return jsonify({'error': 'KV pair updated successfuly'}), 200
-    except:
-        return jsonify({'error': 'Internal error'}), 500
+        return jsonify({'status': 'success', 'msg': 'KV pair updated successfuly'}), 200
+    except grpc.RpcError as e:
+        print(e)
+        return jsonify({'error': 'Internal error caused by exception'}), 500
 
 @app.route('/delete', methods=['DELETE'])
 def delete_value():
@@ -572,17 +605,20 @@ def delete_value():
     channel = grpc.insecure_channel(state['node_addr'])
     stub = pb2_grpc.RaftNodeStub(channel)
     try:
-        resp = stub.GetVal(pb2.GetRequest(key=key))
-        if resp.value == "None":
+        resp = stub.GetVal(pb2.GetRequest(key=key, need_master=True))
+        if resp.status != pb2.GetReplyStatus.SUCCESS:
+            return jsonify({'error': 'Internal error'}), 500
+        elif resp.value == "None":
            return jsonify({'error': 'Key is not found'}), 404
 
         resp = stub.SetVal(pb2.SetRequest(key=key, value=None))
         if resp.success == False:
             return jsonify({'error': 'Internal error'}), 500
 
-        return jsonify({'error': 'Value deleted successfuly'}), 200
-    except:
-        return jsonify({'error': 'Internal error'}), 500
+        return jsonify({'status': 'success', 'msg': 'Value deleted successfuly'}), 200
+    except grpc.RpcError as e:
+        print(e)
+        return jsonify({'error': 'Internal error caused by exception'}), 500
 
 
 def main(id, nodes):
