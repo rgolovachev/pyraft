@@ -30,6 +30,8 @@ message SuspendRequest {
 message SetRequest {
         string key = 1;
         string value = 2;
+        bool is_delete = 3;
+        string request_id = 4;
 }
     
 message SetReply {
@@ -54,6 +56,7 @@ message CasRequest {
         string key = 1;
         string expected = 2;
         string desired = 3;
+        string request_id = 4;
 }
 
 message CasReply {
@@ -68,6 +71,7 @@ message Entry {
         string value = 3;
         string cond = 4;
         bool has_cond = 5;
+        bool is_delete = 6;
 }
 
 message ResultWithTerm {

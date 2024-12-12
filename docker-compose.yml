@@ -10,7 +10,7 @@ services:
     environment:
       - NODE_ID=0
     networks:
-      - ping-pong-net
+      - raftnet
 
 
   node2:
@@ -22,7 +22,7 @@ services:
     environment:
       - NODE_ID=1
     networks:
-      - ping-pong-net
+      - raftnet
 
 
   node3:
@@ -34,7 +34,7 @@ services:
     environment:
       - NODE_ID=2
     networks:
-      - ping-pong-net
+      - raftnet
 
 networks:
-  ping-pong-net:
+  raftnet:

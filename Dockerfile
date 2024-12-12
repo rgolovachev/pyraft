@@ -5,7 +5,7 @@ WORKDIR /app
 COPY raft.py /app/
 COPY raft_pb2_grpc.py /app/
 COPY raft_pb2.py /app/
-COPY config.conf /app/
+COPY raft_docker.conf /app/
 COPY requirements.txt /app/
 
 RUN pip install --upgrade pip
