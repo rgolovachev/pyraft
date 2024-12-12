@@ -3,6 +3,7 @@ import random
 import concurrent.futures
 import threading
 import time
+import queue
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 from flask import Flask, request, jsonify, Response
@@ -238,8 +239,11 @@ def replicate_logs_thread(id_to_request):
 
     entries = []
     idx_from = state['next_idx'][id_to_request]
-    for (term, (_, key, value)) in state['logs'][idx_from:]:
-        entries.append(pb2.Entry(term=term, key=key, value=value))
+    for (term, (type, key, value, cond, _)) in state['logs'][idx_from:]:
+        if type == 'set':
+            entries.append(pb2.Entry(term=term, key=key, value=value, has_cond=False))
+        elif type == 'cas':
+            entries.append(pb2.Entry(term=term, key=key, value=value, has_cond=True, cond=cond))
 
     try:
         ensure_connected(id_to_request)
@@ -304,10 +308,30 @@ def replicate_logs():
             if has_enough_replicate_votes():
                 state['commit_idx'] += 1
 
-            while state['commit_idx'] > state['last_applied']:
-                state['last_applied'] += 1
-                _, key, value = state['logs'][state['last_applied']][1]
-                state['hash_table'][key] = value
+            apply_logs()
+
+#
+# apply logs to state machine
+#
+def apply_logs():
+    while state['commit_idx'] > state['last_applied']:
+        state['last_applied'] += 1
+        type, key, value, cond, q = state['logs'][state['last_applied']][1]
+        print(state['type'] == 'leader', type, key, value, cond, q)
+        if type == 'set':
+            state['hash_table'][key] = value
+            if state['type'] == 'leader' and q != None:
+                q.put([True])
+        elif type == 'cas' and key in state['hash_table'] and state['hash_table'][key] == cond:
+            old_value = state['hash_table'][key]
+            state['hash_table'][key] = value
+            if state['type'] == 'leader' and q != None:
+                q.put([True, old_value])
+        elif type == 'cas' and state['type'] == 'leader' and q != None:
+            if not (key in state['hash_table']):
+                q.put([False, "None"])
+            else:
+                q.put([False, state['hash_table'][key]])
 
 
 #
@@ -372,13 +396,8 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
                 if request.leader_commit > state['commit_idx']:
                     state['commit_idx'] = min(request.leader_commit, len(state['logs']) - 1)
+                    apply_logs()
 
-                    while state['commit_idx'] > state['last_applied']:
-                        state['last_applied'] += 1
-                        _, key, value = state['logs'][state['last_applied']][1]
-                        state['hash_table'][key] = value
-
-                # need to apply entries
                 return pb2.ResultWithTerm(term=state['term'], result=True)
 
             failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
@@ -393,7 +412,10 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
                 entries = []
                 for entry in request.entries:
-                    entries.append((entry.term, ('set', entry.key, entry.value)))
+                    if not entry.has_cond:
+                        entries.append((entry.term, ('set', entry.key, entry.value, None, None)))
+                    else:
+                        entries.append((entry.term, ('set', entry.key, entry.value, entry.cond, None)))
 
                 start_idx = request.prev_log_index + 1
 
@@ -414,11 +436,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
                 if request.leader_commit > state['commit_idx']:
                     state['commit_idx'] = min(request.leader_commit, len(state['logs']) - 1)
-
-                    while state['commit_idx'] > state['last_applied']:
-                        state['last_applied'] += 1
-                        _, key, value = state['logs'][state['last_applied']][1]
-                        state['hash_table'][key] = value
+                    apply_logs()
 
                 return success_reply
 
@@ -487,16 +505,11 @@ class Handler(pb2_grpc.RaftNodeServicer):
 
             return resp
 
-        idx = 0
+        handled_event = queue.Queue()
         with state_lock:
-            state['logs'].append((state['term'], ('set', request.key, request.value)))
-            idx = len(state['logs']) - 1
+            state['logs'].append((state['term'], ('set', request.key, request.value, None, handled_event)))
 
-        while True:
-            time.sleep(0.01)
-            with state_lock:
-                if state['commit_idx'] >= idx:
-                    break
+        handled_event.get()
 
         return pb2.SetReply(success=True)
 
@@ -505,28 +518,27 @@ class Handler(pb2_grpc.RaftNodeServicer):
         if is_suspended:
             return
 
-        return pb2.CasReply(success=False)
-        # if state['type'] != 'leader':
-        #     if state['leader_id'] == -1:
-        #         return pb2.CasReply(success=False)
+        if state['type'] != 'leader':
+            if state['leader_id'] == -1:
+                return pb2.CasReply(success=False)
 
-        #     ensure_connected(state['leader_id'])
+            ensure_connected(state['leader_id'])
 
-        #     (_, _, stub) = state['nodes'][state['leader_id']]
-        #     try:
-        #         resp = stub.CasVal(request, timeout=0.100)
-        #     except:
-        #         return pb2.CasReply(success=False)
+            (_, _, stub) = state['nodes'][state['leader_id']]
+            try:
+                resp = stub.CasVal(request, timeout=0.100)
+            except:
+                return pb2.CasReply(success=False)
 
-        #     return resp
+            return resp
 
-        # with state_lock:
-        #     old_value = state['hash_table'][request.key]
-        #     applied = False
-        #     if old_value == request.expected:
-        #         applied = True
-        #         state['logs'].append((state['term'], ('cas', request.key, request.desired)))
-        #     return pb2.CasReply(success=True, applied=applied, old_value=old_value)
+        handled_event = queue.Queue()
+        with state_lock:
+            state['logs'].append((state['term'], ('cas', request.key, request.desired, request.expected, handled_event)))
+
+        result = handled_event.get()
+
+        return pb2.CasReply(success=True, applied=result[0], old_value=result[1])
 
 #
 # other
@@ -581,12 +593,14 @@ def get_value():
             req.last_applied = int(last_applied)
             req.last_applied_valid = True
         resp = stub.GetVal(req)
+        # read from replica
         if resp.status == pb2.GetReplyStatus.FAILED:
             return jsonify({'status': 'failed'}), 429
-        # read from replica
         elif resp.status == pb2.GetReplyStatus.SUCCESS:
+            if resp.value == "None":
+                return jsonify({'error': 'key not found'}), 404
             return jsonify({'status': 'success', key: resp.value}), 200
-        #read from master
+        #read from leader
         elif resp.status == pb2.GetReplyStatus.REDIRECT:
             httpResp = jsonify({'status': 'redirected', 'last_applied': resp.last_applied})
             httpResp.headers['Location'] = resp.redirect_addr
@@ -663,6 +677,27 @@ def delete_value():
             return jsonify({'error': 'Internal error'}), 500
 
         return jsonify({'status': 'success', 'msg': 'Value deleted successfuly'}), 200
+    except grpc.RpcError as e:
+        print(e)
+        return jsonify({'error': 'Internal error caused by exception'}), 500
+
+@app.route('/cas', methods=['PUT'])
+def cas_value():
+    key = request.args.get('key')
+    expected = request.args.get('expected')
+    desired = request.args.get('desired')
+    if not key or not expected or not desired:
+        return jsonify({'error': 'Key and expected and desired query params are required'}), 400
+    channel = grpc.insecure_channel(state['node_addr'])
+    stub = pb2_grpc.RaftNodeStub(channel)
+    try:
+        resp = stub.CasVal(pb2.CasRequest(key=key, expected=expected, desired=desired))
+        if resp.success == False:
+            return jsonify({'error': 'Internal error'}), 500
+        elif resp.applied == False:
+            return jsonify({'error': 'CAS condition failed'}), 400
+
+        return jsonify({'status': 'success', 'msg': 'Value CAS-ed successfuly'}), 200
     except grpc.RpcError as e:
         print(e)
         return jsonify({'error': 'Internal error caused by exception'}), 500

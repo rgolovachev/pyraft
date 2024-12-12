@@ -66,6 +66,8 @@ message Entry {
         int64 term = 1;
         string key = 2;
         string value = 3;
+        string cond = 4;
+        bool has_cond = 5;
 }
 
 message ResultWithTerm {
