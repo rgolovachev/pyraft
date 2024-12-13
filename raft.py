@@ -19,7 +19,7 @@ import raft_pb2 as pb2
 HEARTBEAT_DURATION = 50
 ELECTION_DURATION_FROM = 150
 ELECTION_DURATION_TO = 300
-NUM_RETRIES = 3
+NUM_RETRIES = 5
 
 #
 # global state
@@ -77,7 +77,6 @@ def start_election():
         state['type'] = 'candidate'
         state['leader_id'] = -1
         state['term'] += 1
-        # vote for ourselves
         state['vote_count'] = 1
         state['voted_for_id'] = state['id']
 
@@ -86,8 +85,7 @@ def start_election():
         if id != state['id']:
             t = threading.Thread(target=request_vote_worker_thread, args=(id,), daemon=True)
             t.start()
-    # now RequestVote threads have started,
-    # lets set a timer for the end of the election
+
     reset_election_campaign_timer()
 
 
@@ -103,7 +101,6 @@ def finalize_election():
             return
 
         if has_enough_votes(state['vote_count']):
-            # become a leader
             state['type'] = 'leader'
             state['leader_id'] = state['id']
             state['vote_count'] = 0
@@ -120,8 +117,7 @@ def finalize_election():
             print("Votes received")
             print(f"I am a leader. Term: {state['term']}")
             return
-        # if election was unsuccessful
-        # then pick new timeout duration
+
         become_a_follower()
         select_new_election_timeout_duration()
         reset_election_campaign_timer()
@@ -157,9 +153,6 @@ def request_vote_worker_thread(id_to_request):
         ), timeout=0.1)
 
         with state_lock:
-            # if requested node replied for too long,
-            # and during this time candidate stopped
-            # being a candidate, then do nothing
             if state['type'] != 'candidate' or is_suspended:
                 return
 
@@ -170,7 +163,6 @@ def request_vote_worker_thread(id_to_request):
             elif resp.result:
                 state['vote_count'] += 1
 
-        # got enough votes, no need to wait for the end of the timeout
         if has_enough_votes(state['vote_count']):
             finalize_election()
     except grpc.RpcError:
@@ -251,8 +243,7 @@ def replicate_logs_thread(id_to_request):
                 state['match_idx'][id_to_request] = len(state['logs']) - 1
             else:
                 state['next_idx'][id_to_request] = max(state['next_idx'][id_to_request] - 1, 0)
-                state['match_idx'][id_to_request] = min(state['match_idx'][id_to_request],
-                                                        state['next_idx'][id_to_request] - 1)
+                state['match_idx'][id_to_request] = min(state['match_idx'][id_to_request], state['next_idx'][id_to_request] - 1)
 
     except grpc.RpcError:
         state['next_idx'][id_to_request] = 0
@@ -369,7 +360,6 @@ class Handler(pb2_grpc.RaftNodeServicer):
             return
 
         reset_election_campaign_timer()
-
         with state_lock:
             if request.term > state['term']:
                 state['term'] = request.term
@@ -411,7 +401,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 logs_end = state['logs'][start_idx + len(entries):]
 
                 has_conflicts = False
-                for i in range(0, len(logs_middle)):
+                for i in range(len(logs_middle)):
                     if logs_middle[i][0] != entries[i][0]:
                         has_conflicts = True
                         break
@@ -489,7 +479,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
             ok = False
             for i in range(NUM_RETRIES):
                 try:
-                    resp = stub.SetVal(request, timeout=0.2)
+                    resp = stub.SetVal(request, timeout=0.3)
                 except grpc.RpcError as e:
                     print(f"{e}")
                     reopen_connection(state['leader_id'])
@@ -533,7 +523,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
             ok = False
             for i in range(NUM_RETRIES):
                 try:
-                    resp = stub.CasVal(request, timeout=0.2)
+                    resp = stub.CasVal(request, timeout=0.3)
                 except grpc.RpcError as e:
                     print(f"{e}")
                     reopen_connection(state['leader_id'])
