@@ -379,7 +379,7 @@ class Handler(pb2_grpc.RaftNodeServicer):
                 return failure_reply
             elif request.prev_log_index > len(state['logs']) - 1:
                 return failure_reply
-            elif request.term == state['term']:
+            elif request.prev_log_index < 0 or request.prev_log_term == state['term'][request.prev_log_index][0]:
                 state['leader_id'] = request.leader_id
 
                 success_reply = pb2.ResultWithTerm(term=state['term'], result=True)
