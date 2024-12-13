@@ -763,6 +763,20 @@ def get_leader():
         print(e)
         return jsonify({'error': 'Internal error caused by exception'}), 500
 
+@app.route('/suspend', methods=['POST'])
+def suspend():
+    period = request.args.get('period')
+    if period == None:
+        return jsonify({'error': 'period must be specified'}), 400
+    channel = grpc.insecure_channel(state['node_addr'])
+    stub = pb2_grpc.RaftNodeStub(channel)
+    try:
+        resp = stub.Suspend(pb2.SuspendRequest(period=int(period)))
+        return jsonify({'msg': 'suspended successfuly'}), 200
+    except grpc.RpcError as e:
+        print(e)
+        return jsonify({'error': 'Internal error caused by exception'}), 500
+
 
 def main(id, nodes):
     election_th = threading.Thread(target=election_timeout_thread)
@@ -812,9 +826,9 @@ def main(id, nodes):
 
 
 if __name__ == '__main__':
-    [id] = sys.argv[1:]
+    [id, cfg_path] = sys.argv[1:]
     nodes = None
-    with open("config.conf", 'r') as f:
+    with open(cfg_path, 'r') as f:
         line_parts = map(lambda line: line.split(), f.read().strip().split("\n"))
         nodes = dict([(int(p[0]), (p[1], int(p[2]), None)) for p in line_parts])
         print(list(nodes))

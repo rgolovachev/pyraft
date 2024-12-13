@@ -4,7 +4,7 @@ import requests
 import random
 
 def start_process(id):
-    return subprocess.Popen(['python3', 'raft.py', str(id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return subprocess.Popen(['python3', 'raft.py', str(id), "config.conf"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def main():
     nodes = [start_process(0), start_process(1), start_process(2)]
