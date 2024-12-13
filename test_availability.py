@@ -130,7 +130,7 @@ def main():
             failed_status_code(200, create_resp.status_code)
         suspend_nodes(replicas, suspend_idx, 5, leader_address)
         (host, port, _) = nodesCfg[replicas[1][1]]
-        time.sleep(0.3)
+        time.sleep(0.5)
         leader_id, leader_address = get_leader(f"{host}:{port-1000}")
         print('new leader_id and leader_address: ' + str(leader_id) + ', ' + str(leader_address))
         replicas.append(start_leader)

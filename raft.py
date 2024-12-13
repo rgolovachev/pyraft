@@ -84,21 +84,16 @@ def start_election():
     print(f"I am a candidate. Term: {state['term']}")
     for id in state['nodes'].keys():
         if id != state['id']:
-            t = threading.Thread(target=request_vote_worker_thread, args=(id,))
+            t = threading.Thread(target=request_vote_worker_thread, args=(id,), daemon=True)
             t.start()
     # now RequestVote threads have started,
     # lets set a timer for the end of the election
     reset_election_campaign_timer()
 
 
-def has_enough_votes():
+def has_enough_votes(vote_count):
     required_votes = (len(state['nodes']) // 2) + 1
-    return state['vote_count'] >= required_votes
-
-
-def has_enough_replicate_votes():
-    required_votes = (len(state['nodes']) // 2) + 1
-    return state['replicate_vote_count'] >= required_votes
+    return vote_count >= required_votes
 
 
 def finalize_election():
@@ -107,7 +102,7 @@ def finalize_election():
         if state['type'] != 'candidate':
             return
 
-        if has_enough_votes():
+        if has_enough_votes(state['vote_count']):
             # become a leader
             state['type'] = 'leader'
             state['leader_id'] = state['id']
@@ -176,7 +171,7 @@ def request_vote_worker_thread(id_to_request):
                 state['vote_count'] += 1
 
         # got enough votes, no need to wait for the end of the timeout
-        if has_enough_votes():
+        if has_enough_votes(state['vote_count']):
             finalize_election()
     except grpc.RpcError:
         reopen_connection(id_to_request)
@@ -189,18 +184,11 @@ def election_timeout_thread():
             if is_suspended:
                 continue
 
-            # election timer just fired
             if state['type'] == 'follower':
-                # node didn't receive any heartbeats on time
-                # that's why it should become a candidate
                 print("The leader is dead")
                 start_election()
             elif state['type'] == 'candidate':
-                # okay, election is over
-                # we need to count votes
                 finalize_election()
-            # if somehow we got here while being a leader,
-            # then do nothing
 
 
 def heartbeat_thread(id_to_request):
@@ -215,23 +203,15 @@ def heartbeat_thread(id_to_request):
                 ensure_connected(id_to_request)
                 (_, _, stub) = state['nodes'][id_to_request]
 
-                # In case this is heartbeat send -228 as value in replicate logs params
-                resp = stub.AppendEntries(pb2.AppendRequest(
-                    term=state['term'],
-                    leader_id=state['id'],
-                    prev_log_index=-228,
-                    prev_log_term=-228,
-                    entries=None,
-                    leader_commit=-228
-                ), timeout=0.100)
+                resp = stub.AppendEntries(pb2.AppendRequest(term=state['term'], leader_id=state['id'], prev_log_index=-2, entries=None,), timeout=0.1)
 
                 if (state['type'] != 'leader') or is_suspended:
                     continue
 
                 with state_lock:
                     if state['term'] < resp.term:
-                        reset_election_campaign_timer()
                         state['term'] = resp.term
+                        reset_election_campaign_timer()
                         become_a_follower()
                 threading.Timer(HEARTBEAT_DURATION * 0.001, heartbeat_events[id_to_request].set).start()
         except grpc.RpcError:
@@ -263,7 +243,7 @@ def replicate_logs_thread(id_to_request):
             prev_log_term=state['logs'][state['next_idx'][id_to_request] - 1][0] if state['next_idx'][id_to_request] > 0 else -1,
             entries=entries,
             leader_commit=state['commit_idx']
-        ), timeout=0.100)
+        ), timeout=0.1)
 
         with state_lock:
             if resp.result:
@@ -312,7 +292,7 @@ def replicate_logs():
                 if state['match_idx'][i] > state['commit_idx']:
                     state['replicate_vote_count'] += 1
 
-            if has_enough_replicate_votes():
+            if has_enough_votes(state['replicate_vote_count']):
                 state['commit_idx'] += 1
 
             apply_logs()
@@ -373,18 +353,15 @@ class Handler(pb2_grpc.RaftNodeServicer):
             failure_reply = pb2.ResultWithTerm(term=state['term'], result=False)
             if request.term < state['term']:
                 return failure_reply
-            elif request.last_log_index < len(state['logs']) - 1:
+            elif len(state['logs']) != 0 and request.last_log_term < state['logs'][-1][0]:
                 return failure_reply
-            elif len(state['logs']) != 0 and request.last_log_index == len(
-                    state['logs']) - 1 and request.last_log_term != state['logs'][-1][0]:
+            elif len(state['logs']) != 0 and request.last_log_term == state['logs'][-1][0] and request.last_log_index < len(state['logs']) - 1:
                 return failure_reply
-            elif state['term'] == request.term and state['voted_for_id'] == -1:
+            else:
                 become_a_follower()
                 state['voted_for_id'] = request.candidate_id
                 print(f"Voted for node {state['voted_for_id']}")
                 return pb2.ResultWithTerm(term=state['term'], result=True)
-
-            return failure_reply
 
     def AppendEntries(self, request, context):
         global is_suspended
@@ -394,16 +371,11 @@ class Handler(pb2_grpc.RaftNodeServicer):
         reset_election_campaign_timer()
 
         with state_lock:
-            is_heartbeat = (
-                    request.prev_log_index == -228 or
-                    request.prev_log_term == -228 or
-                    request.leader_commit == -228
-            )
-
             if request.term > state['term']:
                 state['term'] = request.term
                 become_a_follower()
-            if is_heartbeat and request.term == state['term']:
+            # this is a heartbeat
+            if request.prev_log_index == -2 and request.term == state['term']:
                 state['leader_id'] = request.leader_id
 
                 if request.leader_commit > state['commit_idx']:
@@ -608,7 +580,7 @@ def reopen_connection(id):
 
 
 def start_server(state):
-    (ip, port, _stub) = state['nodes'][state['id']]
+    (ip, port, _) = state['nodes'][state['id']]
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
     pb2_grpc.add_RaftNodeServicer_to_server(Handler(), server)
     SERVICE_NAMES = (pb2.DESCRIPTOR.services_by_name['RaftNode'].full_name, reflection.SERVICE_NAME)
@@ -803,8 +775,7 @@ def main(id, nodes):
     (host, port, _) = nodes[id]
 
     state['node_addr'] = f"{host}:{port}"
-    http_server_th = threading.Thread(target=app.run, args=(host,port-1000,))
-    http_server_th.daemon = True
+    http_server_th = threading.Thread(target=app.run, args=(host,port-1000,), daemon=True)
     http_server_th.start()
 
     server = start_server(state)
@@ -822,7 +793,9 @@ def main(id, nodes):
         print("Shutting down")
 
         election_th.join()
-        [t.join() for t in heartbeat_threads]
+        log_replication_th.join()
+        for hb_thr in heartbeat_threads:
+            hb_thr.join()
 
 
 if __name__ == '__main__':
